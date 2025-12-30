@@ -1,0 +1,28 @@
+name = "hang-backend"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# KV Namespaces
+[[kv_namespaces]]
+binding = "USER_TOKENS"
+id = "1500306468464b8093715d7577c394e7"
+preview_id = "ecae6b4da88d498b9a37060331094e02"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+# Secrets - set these via:
+# wrangler secret put GOOGLE_CLIENT_ID
+# wrangler secret put GOOGLE_CLIENT_SECRET
+# wrangler secret put JWT_SECRET
+# wrangler secret put ZOOM_CLIENT_ID
+# wrangler secret put ZOOM_CLIENT_SECRET
+
+# Observability - Workers Logs
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1.0
+invocation_logs = true
+persist = true
+

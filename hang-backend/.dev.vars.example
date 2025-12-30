@@ -1,0 +1,12 @@
+# Copy this file to .dev.vars and fill in your values
+# .dev.vars is used for local development (wrangler dev)
+# It's gitignored, so your secrets won't be committed
+
+GOOGLE_CLIENT_ID=your-google-client-id-here
+GOOGLE_CLIENT_SECRET=your-google-client-secret-here
+JWT_SECRET=your-jwt-secret-here
+
+# Zoom OAuth credentials (for user-level OAuth)
+ZOOM_CLIENT_ID=your-zoom-client-id-here
+ZOOM_CLIENT_SECRET=your-zoom-client-secret-here
+

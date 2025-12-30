@@ -1,4 +1,4 @@
-# Hang
+# Hang — Quickly create meeting links
 
 ![Hang Extension](hang-extension/metadata/hang-1.png)
 

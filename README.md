@@ -1,5 +1,7 @@
 # Hang
 
+![Hang Extension](hang-extension/metadata/hang-1.png)
+
 Quickly create meeting links (Google Meet or Zoom) from Raycast.
 
 ## Repository Structure

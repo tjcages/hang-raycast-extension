@@ -99,7 +99,7 @@ async function createGoogleMeetMeeting(): Promise<string> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    
+
     if (response.status === 401) {
       await clearBackendToken();
       throw new Error("Authentication expired. Please run the command again to re-authenticate.");
@@ -165,7 +165,7 @@ async function createZoomMeeting(): Promise<string> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    
+
     if (response.status === 401) {
       await clearBackendToken();
       throw new Error("Authentication expired. Please run the command again to re-authenticate.");
@@ -229,7 +229,7 @@ export default async function main(props: LaunchProps) {
     await handleOAuthCallback(props);
     return;
   }
-  
+
   try {
     await showToast({
       style: Toast.Style.Animated,

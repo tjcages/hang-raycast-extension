@@ -12,7 +12,7 @@ interface Env {
 function generateToken(userId: string, secret: string): string {
   const payload = {
     userId,
-    exp: Date.now() + 7 * 24 * 60 * 60 * 1000,
+    exp: Date.now() + 90 * 24 * 60 * 60 * 1000, // 90 days instead of 7
   };
   const header = { alg: "HS256", typ: "JWT" };
   return btoa(JSON.stringify(header)) + "." + btoa(JSON.stringify(payload));
@@ -51,6 +51,153 @@ function generateRandomString(length: number): string {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
+}
+
+async function refreshGoogleToken(
+  env: Env,
+  refreshToken: string,
+  userId: string,
+): Promise<{ access_token: string; expires_at: number } | null> {
+  try {
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      console.error("Failed to refresh Google token:", await tokenResponse.text());
+      return null;
+    }
+
+    const tokens = await tokenResponse.json() as {
+      access_token: string;
+      expires_in?: number;
+    };
+
+    const expiresAt = Date.now() + (tokens.expires_in || 3600) * 1000;
+
+    // Update stored token data
+    const existingData = await env.USER_TOKENS.get(`user:${userId}:google`, "json") as {
+      refresh_token?: string;
+    } | null;
+
+    await env.USER_TOKENS.put(
+      `user:${userId}:google`,
+      JSON.stringify({
+        access_token: tokens.access_token,
+        refresh_token: existingData?.refresh_token || refreshToken,
+        expires_at: expiresAt,
+      }),
+    );
+
+    return { access_token: tokens.access_token, expires_at: expiresAt };
+  } catch (error) {
+    console.error("Error refreshing Google token:", error);
+    return null;
+  }
+}
+
+async function refreshZoomToken(
+  env: Env,
+  refreshToken: string,
+  userId: string,
+): Promise<{ access_token: string; expires_at: number } | null> {
+  try {
+    const clientId = env.ZOOM_CLIENT_ID?.trim() || "";
+    const clientSecret = env.ZOOM_CLIENT_SECRET?.trim() || "";
+    
+    if (!clientId || !clientSecret) {
+      return null;
+    }
+
+    const credentials = btoa(`${clientId}:${clientSecret}`);
+
+    const tokenResponse = await fetch("https://zoom.us/oauth/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      console.error("Failed to refresh Zoom token:", await tokenResponse.text());
+      return null;
+    }
+
+    const tokens = await tokenResponse.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+
+    const expiresAt = Date.now() + (tokens.expires_in || 3600) * 1000;
+
+    // Update stored token data
+    await env.USER_TOKENS.put(
+      `user:${userId}:zoom`,
+      JSON.stringify({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token || refreshToken,
+        expires_at: expiresAt,
+      }),
+    );
+
+    return { access_token: tokens.access_token, expires_at: expiresAt };
+  } catch (error) {
+    console.error("Error refreshing Zoom token:", error);
+    return null;
+  }
+}
+
+async function getValidAccessToken(
+  env: Env,
+  userId: string,
+  provider: "google" | "zoom",
+): Promise<{ access_token: string; expires_at: number } | null> {
+  const userData = await env.USER_TOKENS.get(`user:${userId}:${provider}`, "json") as {
+    access_token: string;
+    refresh_token?: string;
+    expires_at: number;
+  } | null;
+
+  if (!userData) {
+    return null;
+  }
+
+  const now = Date.now();
+  const expiresAt = userData.expires_at;
+  const bufferTime = 5 * 60 * 1000; // Refresh 5 minutes before expiration
+
+  // If token is still valid (with buffer), return it
+  if (expiresAt > now + bufferTime) {
+    return { access_token: userData.access_token, expires_at: expiresAt };
+  }
+
+  // Token is expired or about to expire, try to refresh
+  if (!userData.refresh_token) {
+    return null; // No refresh token available
+  }
+
+  if (provider === "google") {
+    return await refreshGoogleToken(env, userData.refresh_token, userId);
+  } else if (provider === "zoom") {
+    return await refreshZoomToken(env, userData.refresh_token, userId);
+  }
+
+  return null;
 }
 
 async function handleGoogleOAuthStart(env: Env, request: Request): Promise<Response> {
@@ -226,20 +373,12 @@ async function handleCreateMeeting(env: Env, request: Request): Promise<Response
     return new Response("Invalid token", { status: 401 });
   }
 
-  const userData = await env.USER_TOKENS.get(`user:${tokenData.userId}:google`, "json");
-  if (!userData) {
-    return new Response("Google account not authenticated. Please authenticate with Google first.", { status: 403 });
+  const tokenResult = await getValidAccessToken(env, tokenData.userId, "google");
+  if (!tokenResult) {
+    return new Response("Google account not authenticated or token refresh failed. Please re-authenticate.", { status: 403 });
   }
 
-  const { access_token, expires_at } = userData as {
-    access_token: string;
-    refresh_token?: string;
-    expires_at: number;
-  };
-
-  if (expires_at < Date.now()) {
-    return new Response("Token expired - please re-authenticate", { status: 401 });
-  }
+  const { access_token } = tokenResult;
 
   const now = new Date();
   const endTime = new Date(now.getTime() + 60 * 60 * 1000);
@@ -339,23 +478,15 @@ async function handleCreateZoomMeeting(env: Env, request: Request): Promise<Resp
     return new Response("Invalid token", { status: 401 });
   }
 
-  const userData = await env.USER_TOKENS.get(`user:${tokenData.userId}:zoom`, "json");
-  if (!userData) {
+  const tokenResult = await getValidAccessToken(env, tokenData.userId, "zoom");
+  if (!tokenResult) {
     return new Response(
-      JSON.stringify({ error: "Zoom account not authenticated. Please authenticate with Zoom first.", code: "ZOOM_NOT_AUTHENTICATED" }),
+      JSON.stringify({ error: "Zoom account not authenticated or token refresh failed. Please re-authenticate.", code: "ZOOM_NOT_AUTHENTICATED" }),
       { status: 403, headers: { "Content-Type": "application/json" } },
     );
   }
 
-  const { access_token, expires_at } = userData as {
-    access_token: string;
-    refresh_token?: string;
-    expires_at: number;
-  };
-
-  if (expires_at < Date.now()) {
-    return new Response("Token expired - please re-authenticate", { status: 401 });
-  }
+  const { access_token } = tokenResult;
   
   const response = await fetch("https://api.zoom.us/v2/users/me/meetings", {
     method: "POST",
@@ -552,6 +683,48 @@ async function handleTokenRetrieval(env: Env, request: Request): Promise<Respons
   return Response.json({ token });
 }
 
+async function handleTokenStatus(env: Env, request: Request): Promise<Response> {
+  const authHeader = request.headers.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return Response.json({ error: "Missing or invalid authorization" }, { status: 401 });
+  }
+
+  const token = authHeader.substring(7);
+  const tokenData = verifyToken(token, env.JWT_SECRET);
+  if (!tokenData) {
+    return Response.json({ error: "Invalid token" }, { status: 401 });
+  }
+
+  const googleData = await env.USER_TOKENS.get(`user:${tokenData.userId}:google`, "json") as {
+    expires_at: number;
+    refresh_token?: string;
+  } | null;
+
+  const zoomData = await env.USER_TOKENS.get(`user:${tokenData.userId}:zoom`, "json") as {
+    expires_at: number;
+    refresh_token?: string;
+  } | null;
+
+  const now = Date.now();
+  
+  return Response.json({
+    google: googleData ? {
+      authenticated: true,
+      expiresAt: googleData.expires_at,
+      expiresIn: Math.max(0, Math.floor((googleData.expires_at - now) / 1000)),
+      canRefresh: !!googleData.refresh_token,
+      isExpired: googleData.expires_at < now,
+    } : { authenticated: false },
+    zoom: zoomData ? {
+      authenticated: true,
+      expiresAt: zoomData.expires_at,
+      expiresIn: Math.max(0, Math.floor((zoomData.expires_at - now) / 1000)),
+      canRefresh: !!zoomData.refresh_token,
+      isExpired: zoomData.expires_at < now,
+    } : { authenticated: false },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -578,6 +751,12 @@ export default {
         return handleOAuthSuccess(request);
       } else if (path === "/oauth/token" && request.method === "GET") {
         return handleTokenRetrieval(env, request);
+      } else if (path === "/api/token-status" && request.method === "GET") {
+        const response = await handleTokenStatus(env, request);
+        Object.entries(corsHeaders).forEach(([key, value]) => {
+          response.headers.set(key, value);
+        });
+        return response;
       } else if (path === "/api/create-meeting" && request.method === "POST") {
         const response = await handleCreateMeeting(env, request);
         Object.entries(corsHeaders).forEach(([key, value]) => {
